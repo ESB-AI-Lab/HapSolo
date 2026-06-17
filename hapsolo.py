@@ -465,7 +465,7 @@ def hillclimbing(job_args):
         # throw an error
     for i in range(1, numofiterations):
         # forward stepping of GD
-        if (myPID > 1.0 and myQPctMin > 1.0 and myQRPctMin > 1.0) or (i >= maxzeros and sum(costfxndelta[i-maxzeros:i+1]) == 0):
+        if (myPID > 1.0 and myQPctMin > 1.0 and myQRPctMin > 1.0) or (i >= maxzeros and all(abs(costfxndelta[k]) <= resolution for k in range(i-maxzeros+1, i+1))):
             # reassign myQ's
             myPID = uniform(myMinPID, 1.0)
             myQPctMin = uniform(myMinQPctMin, 1)
