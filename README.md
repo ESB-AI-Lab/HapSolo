@@ -4,6 +4,12 @@ An optimization approach for removing secondary haplotigs during diploid genome 
 
 HapSolo runs a hill-climbing search over alignment filter thresholds (PID, query coverage, query/reference length ratio) to minimize a cost function based on conserved single-copy ortholog completeness scores. Two optimizer modes are available: a **random walk** (mode 0, default) that takes stochastic steps through the threshold space, and a **steepest descent** (mode 2) that evaluates all 8 octant neighbors at each step and moves to the lowest-cost position. Both use plateau detection and boundary resets to escape local minima. The result is a primary assembly with reduced haplotype duplication and a secondary assembly containing the purged haplotigs.
 
+# Singularity Installation (Preferred)
+```
+singularity pull --arch amd64 library://esolares/default/hapsolo:latest
+singularity exec --bind $(pwd):/home/$USER hapsolo_latest.sif hapsolo
+```
+
 # Installation
 
 ```
