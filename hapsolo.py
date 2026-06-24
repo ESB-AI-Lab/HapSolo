@@ -231,10 +231,13 @@ def calculateasmstats(bestcontigset):
 def importBuscos(buscofileloc):
     contignames = set()
     buscoids = set()
-    mybuscofiles = glob.glob(buscofileloc + '/busco*/*/full_table_*.tsv')
+    # Support both legacy busco_* and new odbaln_* subfolder naming
+    mybuscofiles = glob.glob(buscofileloc + '/odbaln_*/*/full_table_*.tsv')
     if len(mybuscofiles) == 0:
-        print('No BUSCO result files found matching: ' + buscofileloc + '/busco*/*/full_table_*.tsv')
-        print('Please verify the BUSCO output directory path and that BUSCO has completed successfully.')
+        mybuscofiles = glob.glob(buscofileloc + '/busco*/*/full_table_*.tsv')
+    if len(mybuscofiles) == 0:
+        print('No result files found matching: ' + buscofileloc + '/{odbaln_*,busco*}/*/full_table_*.tsv')
+        print('Please verify the output directory path and that ortholog search has completed successfully.')
         quit(1)
     global busco2contigdict
     global contigs2buscodict
@@ -360,19 +363,11 @@ def ReduceASM(myPID, myQPctMin, myQRPctMin):
 def hillclimbing(job_args):
     mythread = job_args[0]
     numofiterations = job_args[1]
-    # todo: remove resolution as it is already a global var. adjust job args
-    resolution = job_args[2]
+    res = job_args[2]
     myPID = job_args[3]
     myQPctMin = job_args[4]
     myQRPctMin = job_args[5]
-    # parameters
-    bestnscoreslist = list()
-    mysteps = list()
-    mysteps.append(0)
-    mysteps.append(0)
-    mysteps.append(0)
-    # Set up per-thread progress bar (one line per core, updated in place).
-    # Falls back to silent mode if tqdm isn't installed.
+
     pbar = None
     if HAS_TQDM and mode != 1:
         pbar = tqdm(
@@ -382,9 +377,7 @@ def hillclimbing(job_args):
             bar_format='{desc} [{bar:30}] {n_fmt}/{total_fmt} {postfix}',
             leave=True,
             dynamic_ncols=True,
-            # Update at most every 0.2s to avoid terminal thrashing with many threads
             mininterval=0.2,
-            # Force a refresh on every update so progress doesn't get out of order
             miniters=1,
         )
         pbar.set_postfix_str(
@@ -393,159 +386,84 @@ def hillclimbing(job_args):
             + ' QRPMin: ' + ('%.4f' % myQRPctMin)
             + ' CostΔ ' + ('%+.4f' % 0.0)
             + ' Score: ' + ('%.4f' % 0.0))
-    costfxn = [0.0 for ii in range(numofiterations)]
-    costfxndelta = [0.0 for ii in range(numofiterations)]
-    # 0. Calculate scores for original assembly
+
+    costfxn = [0.0] * numofiterations
+    costfxndelta = [0.0] * numofiterations
+
+    # Baseline: score the full unfiltered assembly
     allmycontigs = qrycontigset.union(missingrefcontigset) - smallcontigset - {''}
     allcontigsbuscoscore = calculateBuscos(allmycontigs, busco2contigdict, contigs2buscodict)
-    allsinglebuscos = allcontigsbuscoscore['S']
-    allmissingbuscos = allcontigsbuscoscore['M']
-    alldupebuscos = allcontigsbuscoscore['D']
-    allfragbuscos = allcontigsbuscoscore['F']
     totalbuscos = allcontigsbuscoscore['C'] + allcontigsbuscoscore['M'] + allcontigsbuscoscore['F']
-    # allasmsize = 0
-    if allsinglebuscos == 0:
+    if allcontigsbuscoscore['S'] == 0:
         oldasmscorefxn = 5000.0
     else:
-        oldasmscorefxn = myLinearFxn(allmissingbuscos, allsinglebuscos, alldupebuscos, allfragbuscos, totalbuscos)
+        oldasmscorefxn = myLinearFxn(allcontigsbuscoscore['M'], allcontigsbuscoscore['S'],
+                                      allcontigsbuscoscore['D'], allcontigsbuscoscore['F'], totalbuscos)
+
+    upq = UniquePriorityQueue(bestnscores)
     bestcontigset = allmycontigs.copy()
-    bestpurgedset = allcontigsset - bestcontigset  - {''}
-    # bestscore = oldasmscorefxn
-    bestbuscos = allcontigsbuscoscore.copy()
-    # use fxn uniquepriorityqueue(pqlist, myvalues) for returning a sorted unique priority list
-    myvalues = [oldasmscorefxn, bestcontigset, bestpurgedset, bestbuscos, [0.0, 0.0, 0.0]]
-    # uniquepriorityqueue(bestnscoreslist[bestnscoreidx], [score, setofgoodcontigs, setofmissingcontigs, listofparameters, buscos])
+    bestpurgedset = allcontigsset - bestcontigset - {''}
     if mode != 1:
-        bestnscoreslist.append(myvalues)
-    # process:
-    # 1. Make a step
-    # 2. Calculate new assembly
-    mygoodcontigs = ReduceASM(myPID, myQPctMin, myQRPctMin)
-    mygoodcontigs = mygoodcontigs.union(missingrefcontigset) - smallcontigset - {''}
-    purgedcontigs = allcontigsset - mygoodcontigs - {''}
-    # 3. Calculate new busco scores
-    mygoodcontigsbuscoscore = calculateBuscos(mygoodcontigs, busco2contigdict, contigs2buscodict)
-    newsinglebuscos = mygoodcontigsbuscoscore['S']
-    newmissingbuscos = mygoodcontigsbuscoscore['M']
-    newdupebuscos = mygoodcontigsbuscoscore['D']
-    newfragbuscos = mygoodcontigsbuscoscore['F']
-    if newsinglebuscos == 0:
-        newasmscorefxn = 5000.0
-    else:
-        newasmscorefxn = myLinearFxn(newmissingbuscos, newsinglebuscos, newdupebuscos, newfragbuscos, totalbuscos)
-    costfxn[0] = newasmscorefxn
-    costfxndelta[0] = newasmscorefxn
-    myvalues = [newasmscorefxn, mygoodcontigs, purgedcontigs, mygoodcontigsbuscoscore, [myPID, myQPctMin, myQRPctMin]]
-    bestnscoreslist = uniquepriorityqueue(bestnscoreslist, myvalues)
-    # Account for iteration 0 in the progress bar so the final count matches total.
+        upq.add([oldasmscorefxn, bestcontigset, bestpurgedset,
+                 allcontigsbuscoscore.copy(), [0.0, 0.0, 0.0]])
+
+    # Iteration 0: evaluate starting thresholds
+    cost, contigs, purged, scores = evaluate_thresholds(myPID, myQPctMin, myQRPctMin, totalbuscos)
+    costfxn[0] = cost
+    costfxndelta[0] = cost
+    upq.add([cost, contigs, purged, scores, [myPID, myQPctMin, myQRPctMin]])
+
     if pbar is not None:
         pbar.set_postfix_str(
             'PID: ' + ('%.4f' % myPID)
             + ' QPMin: ' + ('%.4f' % myQPctMin)
             + ' QRPMin: ' + ('%.4f' % myQRPctMin)
             + ' CostΔ ' + ('%+.4f' % costfxndelta[0])
-            + ' Score: ' + ('%.4f' % newasmscorefxn))
+            + ' Score: ' + ('%.4f' % cost))
         pbar.update(1)
-    #if useprimaryformula:
-    #    newasmscorefxn = myLinearFxn(newmissingbuscos, newsinglebuscos, newdupebuscos, newfragbuscos, totalbuscos)
-    #else:
-    #    newasmscorefxn = myLinearFxn(newmissingbuscos, newsinglebuscos, newdupebuscos, newfragbuscos, totalbuscos)
-    # 4. use cost function of previous busco scores with new busco scores
-    # 5. make new step trying to minimize cost function of busco scores.
+
     if mode == 1:
-        return [bestnscoreslist, costfxn, costfxndelta]
-    # Implement random forward walking, optimized decision based walking, other AI's here
-    #if aimode == 0:
-        # call rfw function
-    #elif aimode == 1:
-        # call odbw function
-    #elif aimode == 2:
-        # call another function
-    #else:
-        # throw an error
+        if pbar is not None:
+            pbar.close()
+        return [upq.items, costfxn, costfxndelta]
+
+    if mode == 2:
+        eval_fn = lambda p, q, r: evaluate_thresholds(p, q, r, totalbuscos)
+        optimizer = SteepestDescentOptimizer(myMinPID, myMinQPctMin, myMinQRPctMin,
+                                             stepsize, maxzeros, res, eval_fn)
+    else:
+        optimizer = RandomWalkOptimizer(myMinPID, myMinQPctMin, myMinQRPctMin,
+                                        stepsize, maxzeros, res)
+
     for i in range(1, numofiterations):
-        # forward stepping of GD
-        if (myPID > 1.0 and myQPctMin > 1.0 and myQRPctMin > 1.0) or (i >= maxzeros and all(abs(costfxndelta[k]) <= resolution for k in range(i-maxzeros+1, i+1))):
-            # reassign myQ's
-            myPID = uniform(myMinPID, 1.0)
-            myQPctMin = uniform(myMinQPctMin, 1)
-            myQRPctMin = uniform(myMinQRPctMin, 1)
-        elif myQPctMin > 1.0 and myQRPctMin > 1.0:
-            myQPctMin = uniform(myMinQPctMin, 1)
-            myQRPctMin = uniform(myMinQRPctMin, 1)
-        elif myPID > 1.0 and myQPctMin > 1.0:
-            myPID = uniform(myMinPID, 1.0)
-            myQPctMin = uniform(myMinQPctMin, 1)
-        elif myPID > 1.0 and myQRPctMin > 1.0:
-            myPID = uniform(myMinPID, 1.0)
-            myQRPctMin = uniform(myMinQRPctMin, 1)
-        elif myPID > 1.0:
-            # reassign %ID
-            myPID = uniform(myMinPID, 1.0)
-        elif myQPctMin > 1.0:
-            # reassign myQPctMin
-            myQPctMin = uniform(myMinQPctMin, 1)
-        elif myQRPctMin > 1.0:
-            # reassign myQRPctMin
-            myQRPctMin = uniform(myMinQRPctMin, 1)
+        myPID, myQPctMin, myQRPctMin = optimizer.step(
+            myPID, myQPctMin, myQRPctMin, i, costfxndelta)
+
+        if hasattr(optimizer, 'last_result') and optimizer.last_result is not None:
+            cost, contigs, purged, scores = optimizer.last_result
         else:
-            mystepindex = randint(0, len(mysteps)-1)
-            mysteps[mystepindex] = stepsize
-            while True:
-                # print(str(mysteps[0]) + ':' + str(mysteps[1]))
-                for j in range(0, len(mysteps)):
-                    myrand = randint(0, len(mysteps)-1)
-                    mysteps[j] = stepsize * myrand
-                if mysteps[0] != 0.0 or mysteps[1] != 0.0 or mysteps[2] != 0.0:
-                    break
-            myPID = myPID + mysteps[0]
-            myQPctMin = myQPctMin + mysteps[1]
-            myQRPctMin = myQRPctMin + mysteps[2]
-        mygoodcontigs = ReduceASM(myPID, myQPctMin, myQRPctMin)
-        # include missing contigs > 10Mb
-        mygoodcontigs = mygoodcontigs.union(missingrefcontigset) - smallcontigset - {''}
-        purgedcontigs = allcontigsset - mygoodcontigs - {''}
-        mygoodcontigsbuscoscore = calculateBuscos(mygoodcontigs, busco2contigdict, contigs2buscodict)
-        newsinglebuscos = mygoodcontigsbuscoscore['S']
-        newmissingbuscos = mygoodcontigsbuscoscore['M']
-        newdupebuscos = mygoodcontigsbuscoscore['D']
-        newfragbuscos = mygoodcontigsbuscoscore['F']
-        # cost function here
-        if newsinglebuscos == 0:
-            newasmscorefxn = 50000000.0
-        else:
-            newasmscorefxn = myLinearFxn(newmissingbuscos, newsinglebuscos, newdupebuscos, newfragbuscos, totalbuscos)
-        costfxn[i] = newasmscorefxn
-        costfxndelta[i] = costfxn[i-1] - costfxn[i]
+            cost, contigs, purged, scores = evaluate_thresholds(
+                myPID, myQPctMin, myQRPctMin, totalbuscos)
+
+        costfxn[i] = cost
+        costfxndelta[i] = costfxn[i - 1] - costfxn[i]
+
         if pbar is not None:
             pbar.set_postfix_str(
                 'PID: ' + ('%.4f' % myPID)
                 + ' QPMin: ' + ('%.4f' % myQPctMin)
                 + ' QRPMin: ' + ('%.4f' % myQRPctMin)
                 + ' CostΔ ' + ('%+.4f' % costfxndelta[i])
-                + ' Score: ' + ('%.4f' % newasmscorefxn))
+                + ' Score: ' + ('%.4f' % cost))
             pbar.update(1)
-        # NOTE: no convergence break here. The random-walk algorithm needs to
-        # explore the full iteration budget. The maxzeros mechanism above (line
-        # ~428) resets thresholds when stuck in a local minimum, which is the
-        # actual convergence-escape strategy. A naive delta-based break exits
-        # prematurely on small random steps.
-        if costfxndelta[i] < 0.0 and costfxndelta[i-1] < 0.0:
-            while mysteps[0] != 0 or mysteps[1] != 0:
-                for j in range(0, len(mysteps)):
-                    myrand = randint(0, len(mysteps)-1)
-                    mysteps[j] = stepsize * myrand
-        # store new data into data structure unique priority queue
-        myvalues = [newasmscorefxn, mygoodcontigs, purgedcontigs, mygoodcontigsbuscoscore,
-                    [myPID, myQPctMin, myQRPctMin]]
-        if len(bestnscoreslist) < bestnscores:
-            bestnscoreslist = uniquepriorityqueue(bestnscoreslist, myvalues)
-        else:
-            if bestnscoreslist[bestnscores-1][0] >= newasmscorefxn:
-                bestnscoreslist = uniquepriorityqueue(bestnscoreslist, myvalues)
+
+        if upq.should_add(cost):
+            upq.add([cost, contigs, purged, scores,
+                     [myPID, myQPctMin, myQRPctMin]])
+
     if pbar is not None:
         pbar.close()
-    return [bestnscoreslist, costfxn, costfxndelta]
+    return [upq.items, costfxn, costfxndelta]
 
 
 def CalculatePctAlign(myAlignLen, myTotalLen):
@@ -564,52 +482,359 @@ def CalculateInverseProportion(myPct):
     return inversePct
 
 
+class UniquePriorityQueue:
+    """Bounded priority queue that deduplicates entries with identical contig sets.
+
+    Entries are [score, contig_set, purged_set, busco_scores, thresholds].
+    Lower score = better.  When two entries share the same contig set the one
+    with the lower score is kept.
+    """
+
+    def __init__(self, max_size):
+        self.max_size = max_size
+        self._items = []
+
+    def add(self, entry):
+        items = self._items[:]
+        items.append(entry)
+        items.sort(key=lambda x: x[0])
+        changed = True
+        while changed:
+            changed = False
+            size_groups = {}
+            for i, item in enumerate(items):
+                sz = len(item[1])
+                if sz not in size_groups:
+                    size_groups[sz] = []
+                size_groups[sz].append(i)
+            for indices in size_groups.values():
+                if len(indices) < 2:
+                    continue
+                for j in range(len(indices)):
+                    for k in range(j + 1, len(indices)):
+                        if items[indices[j]][1] == items[indices[k]][1]:
+                            items.pop(indices[k])
+                            changed = True
+                            break
+                    if changed:
+                        break
+                if changed:
+                    break
+        self._items = items[:self.max_size]
+
+    def should_add(self, score):
+        return len(self._items) < self.max_size or score <= self._items[-1][0]
+
+    @property
+    def items(self):
+        return self._items
+
+    def __len__(self):
+        return len(self._items)
+
+    def __getitem__(self, idx):
+        return self._items[idx]
+
+
 def uniquepriorityqueue(pqlist, myvalue):
-    pqlist = pqlist[:]
-    pqlist.append(myvalue)
-    pqlist = sorted(pqlist, key=lambda x: x[0])
-    while True:
-        #print(pqlist)
-        mydupes = set()
-        realdupes = list()
-        mysamesizesets = list()
-        mymasterdupelist = list()
-        myfinaldupelist = list()
-        for i in range(0, len(pqlist)):
-            mysamesizesets.append([len(pqlist[i][1]), i])
-        mysamesizesets = sorted(mysamesizesets)
-        for i in range(1, len(mysamesizesets)):
-            if mysamesizesets[i-1][0] == mysamesizesets[i][0]:
-                mydupes.add(mysamesizesets[i-1][1])
-                mydupes.add(mysamesizesets[i][1])
-            else:
-                if len(mydupes) > 0:
-                    mymasterdupelist.append(mydupes)
-                    mydupes = set()
-        if len(mydupes) > 0:
-            mymasterdupelist.append(mydupes)
-        for i in range(0, len(mymasterdupelist)):
-            templist = list(mymasterdupelist[i])
-            for j in range(0, len(templist)):
-                for k in range(j, len(templist)):
-                    if j != k:
-                        myfinaldupelist.append((templist[j], templist[k]))
-        # here we remove the dupes. Keep lowest score
-        for i in range(0, len(myfinaldupelist)):
-            if pqlist[myfinaldupelist[i][0]][1] == pqlist[myfinaldupelist[i][1]][1]:
-                realdupes.append(i)
-        if len(realdupes) == 0:
-            return pqlist[0:bestnscores]
+    """Backward-compatible wrapper around UniquePriorityQueue."""
+    upq = UniquePriorityQueue(bestnscores)
+    for item in pqlist:
+        upq.add(item)
+    upq.add(myvalue)
+    return upq.items
+
+
+class BaseOptimizer:
+    """Base class for threshold optimizers.
+
+    Subclass and implement step() to create a new optimization strategy.
+    """
+
+    def __init__(self, min_pid, min_qpct, min_qrpct):
+        self.min_pid = min_pid
+        self.min_qpct = min_qpct
+        self.min_qrpct = min_qrpct
+
+    def step(self, pid, qpct, qrpct, iteration, cost_deltas):
+        """Return new (pid, qpct, qrpct) thresholds."""
+        raise NotImplementedError
+
+
+class RandomWalkOptimizer(BaseOptimizer):
+    """Random walk optimizer with plateau detection and boundary resets.
+
+    This is the original HapSolo mode 0 algorithm: takes random steps in
+    threshold space, resets to random when stuck on plateaus or when
+    thresholds drift out of bounds [0, 1].
+    """
+
+    def __init__(self, min_pid, min_qpct, min_qrpct, step_size, maxzeros, resolution):
+        super().__init__(min_pid, min_qpct, min_qrpct)
+        self.step_size = step_size
+        self.maxzeros = maxzeros
+        self.resolution = resolution
+        self._steps = [0, 0, 0]
+
+    def step(self, pid, qpct, qrpct, iteration, cost_deltas):
+        # After two consecutive cost increases, constrain the step vector
+        if iteration >= 2 and cost_deltas[iteration - 1] < 0.0 and cost_deltas[iteration - 2] < 0.0:
+            while self._steps[0] != 0 or self._steps[1] != 0:
+                for j in range(3):
+                    self._steps[j] = self.step_size * randint(0, len(self._steps) - 1)
+
+        plateau = (iteration >= self.maxzeros and
+                   all(abs(cost_deltas[k]) <= self.resolution
+                       for k in range(iteration - self.maxzeros + 1, iteration + 1)))
+
+        out_pid = pid > 1.0
+        out_qpct = qpct > 1.0
+        out_qrpct = qrpct > 1.0
+
+        if (out_pid and out_qpct and out_qrpct) or plateau:
+            pid = uniform(self.min_pid, 1.0)
+            qpct = uniform(self.min_qpct, 1.0)
+            qrpct = uniform(self.min_qrpct, 1.0)
+        elif out_qpct and out_qrpct:
+            qpct = uniform(self.min_qpct, 1.0)
+            qrpct = uniform(self.min_qrpct, 1.0)
+        elif out_pid and out_qpct:
+            pid = uniform(self.min_pid, 1.0)
+            qpct = uniform(self.min_qpct, 1.0)
+        elif out_pid and out_qrpct:
+            pid = uniform(self.min_pid, 1.0)
+            qrpct = uniform(self.min_qrpct, 1.0)
+        elif out_pid:
+            pid = uniform(self.min_pid, 1.0)
+        elif out_qpct:
+            qpct = uniform(self.min_qpct, 1.0)
+        elif out_qrpct:
+            qrpct = uniform(self.min_qrpct, 1.0)
         else:
-            # Remove only ONE duplicate per pass to avoid stale indices,
-            # then restart the while loop to recalculate fresh indices.
-            i = realdupes[0]
-            idx_a = myfinaldupelist[i][0]
-            idx_b = myfinaldupelist[i][1]
-            if pqlist[idx_a][0] < pqlist[idx_b][0]:
-                pqlist = pqlist[0:idx_b] + pqlist[idx_b + 1:]
-            else:
-                pqlist = pqlist[0:idx_a] + pqlist[idx_a + 1:]
+            self._steps[randint(0, 2)] = self.step_size
+            while True:
+                for j in range(3):
+                    self._steps[j] = self.step_size * randint(0, len(self._steps) - 1)
+                if self._steps[0] != 0.0 or self._steps[1] != 0.0 or self._steps[2] != 0.0:
+                    break
+            pid += self._steps[0]
+            qpct += self._steps[1]
+            qrpct += self._steps[2]
+
+        return pid, qpct, qrpct
+
+
+class SteepestDescentOptimizer(BaseOptimizer):
+    """Steepest-descent 8-neighbor optimizer with plateau detection and boundary resets.
+
+    Evaluates all 8 octant neighbors (+/- step on each of 3 dimensions) per
+    iteration and moves to the lowest-cost neighbor. Uses the same restart
+    triggers as RandomWalkOptimizer: plateau detection and out-of-bounds resets.
+
+    Based on the steepest-descent hill climber designed by
+    Juan Yin, Mansi Agrawal, and Prashansa for GPU HapSolo.
+    """
+
+    DIRECTIONS = [
+        (+1, +1, +1), (+1, +1, -1), (+1, -1, +1), (+1, -1, -1),
+        (-1, +1, +1), (-1, +1, -1), (-1, -1, +1), (-1, -1, -1),
+    ]
+
+    def __init__(self, min_pid, min_qpct, min_qrpct, step_size, maxzeros,
+                 resolution, evaluate_fn):
+        super().__init__(min_pid, min_qpct, min_qrpct)
+        self.step_size = step_size
+        self.maxzeros = maxzeros
+        self.resolution = resolution
+        self._evaluate = evaluate_fn
+        self.last_result = None
+
+    def step(self, pid, qpct, qrpct, iteration, cost_deltas):
+        self.last_result = None
+
+        plateau = (iteration >= self.maxzeros and
+                   all(abs(cost_deltas[k]) <= self.resolution
+                       for k in range(iteration - self.maxzeros + 1, iteration + 1)))
+
+        out_pid = pid > 1.0
+        out_qpct = qpct > 1.0
+        out_qrpct = qrpct > 1.0
+
+        if (out_pid and out_qpct and out_qrpct) or plateau:
+            return uniform(self.min_pid, 1.0), uniform(self.min_qpct, 1.0), uniform(self.min_qrpct, 1.0)
+        if out_qpct and out_qrpct:
+            return pid, uniform(self.min_qpct, 1.0), uniform(self.min_qrpct, 1.0)
+        if out_pid and out_qpct:
+            return uniform(self.min_pid, 1.0), uniform(self.min_qpct, 1.0), qrpct
+        if out_pid and out_qrpct:
+            return uniform(self.min_pid, 1.0), qpct, uniform(self.min_qrpct, 1.0)
+        if out_pid:
+            return uniform(self.min_pid, 1.0), qpct, qrpct
+        if out_qpct:
+            return pid, uniform(self.min_qpct, 1.0), qrpct
+        if out_qrpct:
+            return pid, qpct, uniform(self.min_qrpct, 1.0)
+
+        s = self.step_size
+        best_cost = float('inf')
+        best_pos = (pid, qpct, qrpct)
+        best_eval = None
+
+        for dp, dq, dr in self.DIRECTIONS:
+            np_ = pid + dp * s
+            nq = qpct + dq * s
+            nr = qrpct + dr * s
+            if not (self.min_pid <= np_ <= 1.0 and
+                    self.min_qpct <= nq <= 1.0 and
+                    self.min_qrpct <= nr <= 1.0):
+                continue
+            cost, contigs, purged, scores = self._evaluate(np_, nq, nr)
+            if cost < best_cost:
+                best_cost = cost
+                best_pos = (np_, nq, nr)
+                best_eval = (cost, contigs, purged, scores)
+
+        if best_eval is not None:
+            self.last_result = best_eval
+            return best_pos
+
+        return uniform(self.min_pid, 1.0), uniform(self.min_qpct, 1.0), uniform(self.min_qrpct, 1.0)
+
+
+def evaluate_thresholds(pid, qpct, qrpct, total_buscos):
+    """Evaluate a set of filter thresholds against the global alignment data.
+
+    Returns (cost, good_contigs, purged_contigs, busco_scores).
+    """
+    mygoodcontigs = ReduceASM(pid, qpct, qrpct)
+    mygoodcontigs = mygoodcontigs.union(missingrefcontigset) - smallcontigset - {''}
+    purgedcontigs = allcontigsset - mygoodcontigs - {''}
+    scores = calculateBuscos(mygoodcontigs, busco2contigdict, contigs2buscodict)
+    if scores['S'] == 0:
+        cost = 50000000.0
+    else:
+        cost = myLinearFxn(scores['M'], scores['S'], scores['D'], scores['F'], total_buscos)
+    return cost, mygoodcontigs, purgedcontigs, scores
+
+
+def _compute_detailed_asm_stats(contig_set):
+    """Compute assembly statistics at multiple size thresholds."""
+    sizes = []
+    for contig in contig_set:
+        if contig in myContigsDict:
+            sizes.append(myContigsDict[contig][0])
+    if not sizes:
+        return None
+    sizes.sort(reverse=True)
+    total = sum(sizes)
+    thresholds = [0, 1000, 5000, 10000, 25000, 50000]
+    counts = {}
+    lengths = {}
+    for t in thresholds:
+        filtered = [s for s in sizes if s >= t]
+        counts[t] = len(filtered)
+        lengths[t] = sum(filtered)
+    cumsum = 0
+    n50 = n75 = 0
+    l50 = l75 = 0
+    for i, s in enumerate(sizes):
+        cumsum += s
+        if n50 == 0 and cumsum > total / 2.0:
+            n50 = s
+            l50 = i + 1
+        if n75 == 0 and cumsum > total * 0.75:
+            n75 = s
+            l75 = i + 1
+            break
+    return {
+        'counts': counts, 'lengths': lengths,
+        'total_contigs': len(sizes), 'largest': sizes[0],
+        'total_length': total,
+        'n50': n50, 'l50': l50, 'n75': n75, 'l75': l75,
+    }
+
+
+def _compute_gc_and_ns(fasta_path):
+    """Compute GC% and Ns per 100 kbp from a written FASTA file."""
+    gc = 0
+    at = 0
+    n_count = 0
+    total = 0
+    with open(fasta_path) as f:
+        for line in f:
+            if line[0:1] == '>':
+                continue
+            seq = line.strip().upper()
+            gc += seq.count('G') + seq.count('C')
+            at += seq.count('A') + seq.count('T')
+            n_count += seq.count('N')
+            total += len(seq)
+    gc_pct = 100.0 * gc / (gc + at) if (gc + at) > 0 else 0.0
+    ns_per_100k = 100000.0 * n_count / total if total > 0 else 0.0
+    return gc_pct, ns_per_100k
+
+
+def write_report(primary_fasta_path, contig_set, ortho_scores):
+    """Write assembly statistics and ortholog completeness report.
+
+    primary_fasta_path: path to the written primary FASTA (in asms/).
+    contig_set: set of contig names in the primary assembly.
+    ortho_scores: dict with keys S, D, C, F, M.
+    """
+    report_path = primary_fasta_path.replace('_primary.fasta', '_report.txt')
+    asm_name = os.path.basename(primary_fasta_path).replace('.fasta', '')
+
+    stats = _compute_detailed_asm_stats(contig_set)
+    if stats is None:
+        return
+    gc_pct, ns_per_100k = _compute_gc_and_ns(primary_fasta_path)
+
+    total_ortho = ortho_scores['C'] + ortho_scores['F'] + ortho_scores['M']
+    c_pct = 100.0 * ortho_scores['C'] / total_ortho if total_ortho > 0 else 0.0
+    s_pct = 100.0 * ortho_scores['S'] / total_ortho if total_ortho > 0 else 0.0
+    d_pct = 100.0 * ortho_scores['D'] / total_ortho if total_ortho > 0 else 0.0
+    f_pct = 100.0 * ortho_scores['F'] / total_ortho if total_ortho > 0 else 0.0
+    m_pct = 100.0 * ortho_scores['M'] / total_ortho if total_ortho > 0 else 0.0
+
+    w = 28
+    vw = 12
+    with open(report_path, 'w') as f:
+        f.write('All statistics are based on contigs of size >= 500 bp, unless otherwise noted '
+                '(e.g., "# contigs (>= 0 bp)" and "Total length (>= 0 bp)" include all contigs).\n\n')
+        f.write('{:<{w}}{}\n'.format('Assembly', asm_name, w=w))
+        for t in [0, 1000, 5000, 10000, 25000, 50000]:
+            f.write('{:<{w}}{:<{vw}}\n'.format(
+                '# contigs (>= ' + str(t) + ' bp)', stats['counts'][t], w=w, vw=vw))
+        for t in [0, 1000, 5000, 10000, 25000, 50000]:
+            f.write('{:<{w}}{:<{vw}}\n'.format(
+                'Total length (>= ' + str(t) + ' bp)', stats['lengths'][t], w=w, vw=vw))
+        f.write('{:<{w}}{:<{vw}}\n'.format('# contigs', stats['total_contigs'], w=w, vw=vw))
+        f.write('{:<{w}}{:<{vw}}\n'.format('Largest contig', stats['largest'], w=w, vw=vw))
+        f.write('{:<{w}}{:<{vw}}\n'.format('Total length', stats['total_length'], w=w, vw=vw))
+        f.write('{:<{w}}{:<{vw}.2f}\n'.format('GC (%)', gc_pct, w=w, vw=vw))
+        f.write('{:<{w}}{:<{vw}}\n'.format('N50', stats['n50'], w=w, vw=vw))
+        f.write('{:<{w}}{:<{vw}}\n'.format('N75', stats['n75'], w=w, vw=vw))
+        f.write('{:<{w}}{:<{vw}}\n'.format('L50', stats['l50'], w=w, vw=vw))
+        f.write('{:<{w}}{:<{vw}}\n'.format('L75', stats['l75'], w=w, vw=vw))
+        f.write('{:<{w}}{:<{vw}.2f}\n'.format("# N's per 100 kbp", ns_per_100k, w=w, vw=vw))
+        f.write('#\n')
+        f.write('# Ortholog completeness (n=' + str(total_ortho) + ')\n')
+        f.write('#\n')
+        f.write('\tC:' + '{:.1f}'.format(c_pct) + '%'
+                '[S:' + '{:.1f}'.format(s_pct) + '%,'
+                'D:' + '{:.1f}'.format(d_pct) + '%],'
+                'F:' + '{:.1f}'.format(f_pct) + '%,'
+                'M:' + '{:.1f}'.format(m_pct) + '%,'
+                'n:' + str(total_ortho) + '\n')
+        f.write('\n')
+        f.write('\t' + str(ortho_scores['C']) + '\tComplete orthologs (C)\n')
+        f.write('\t' + str(ortho_scores['S']) + '\tComplete and single-copy orthologs (S)\n')
+        f.write('\t' + str(ortho_scores['D']) + '\tComplete and duplicated orthologs (D)\n')
+        f.write('\t' + str(ortho_scores['F']) + '\tFragmented orthologs (F)\n')
+        f.write('\t' + str(ortho_scores['M']) + '\tMissing orthologs (M)\n')
+        f.write('\t' + str(total_ortho) + '\tTotal ortholog groups searched\n')
+
+    return report_path
 
 
 def _print_purge_breakdown(fcounter, mcounter, purge_self, purge_size,
@@ -1107,6 +1332,7 @@ if __name__ == '__main__':
                 print('Writing ' + newasmfilename + ' with score: ' + str(mybestnscoreslist[i][0]))
                 WriteNewAssembly(myasmFileName, newasmfilename, mybestnscoreslist[i][1])
                 WriteNewAssembly(myasmFileName, newasmfilename.replace('_primary.fasta', '_secondary.fasta'), mybestnscoreslist[i][2])
+                write_report('asms/' + newasmfilename, mybestnscoreslist[i][1], mybestnscoreslist[i][3])
             if dumpscores:
                 with open(myasmFileName.replace('.fasta', '_' + str(datetime.datetime.today()).replace(' ', '_').replace('-', '_').replace(':', '_').split('.')[0] + '.scores'), 'w') as fout:
                     fout.write(str(mylist[1][0]))
@@ -1153,6 +1379,7 @@ if __name__ == '__main__':
                 print('Writing ' + newasmfilename + ' with score: ' + str(mybestnscoreslist[i][0]))
                 WriteNewAssembly(myasmFileName, newasmfilename, mybestnscoreslist[i][1])
                 WriteNewAssembly(myasmFileName, newasmfilename.replace('_primary.fasta', '_secondary.fasta'), mybestnscoreslist[i][2])
+                write_report('asms/' + newasmfilename, mybestnscoreslist[i][1], mybestnscoreslist[i][3])
             if dumpscores:
                 with open(myasmFileName.replace('.fasta', '_' + str(datetime.datetime.today()).replace(' ', '_').replace('-', '_').replace(':', '_').split('.')[0] + '.scores'), 'w') as fout:
                     for i in range(0, threads):
@@ -1183,3 +1410,4 @@ if __name__ == '__main__':
             print('Writing ' + newasmfilename + ' with score: ' + str(mybestnscoreslist[i][0]))
             WriteNewAssembly(myasmFileName, newasmfilename, mybestnscoreslist[i][1])
             WriteNewAssembly(myasmFileName, newasmfilename.replace('_primary.fasta', '_secondary.fasta'), mybestnscoreslist[i][2])
+            write_report('asms/' + newasmfilename, mybestnscoreslist[i][1], mybestnscoreslist[i][3])
