@@ -24,23 +24,27 @@ def find_protein_file(lineage_dir):
     """Locate the protein sequence FASTA in an OrthoDB lineage dataset.
 
     Tries ODB10/11 format first, then ODB9 format.
-    Returns the path to the protein FASTA file.
+    Returns (path, odb_version) where odb_version is 'odb9' or 'odb10'.
     """
-    candidates = [
-        os.path.join(lineage_dir, 'refseq_db.faa'),          # ODB10/11
-        os.path.join(lineage_dir, 'ancestral_variants'),      # ODB9 (multi-seq)
-        os.path.join(lineage_dir, 'ancestral'),               # ODB9 (consensus)
-    ]
-    for path in candidates:
-        if os.path.exists(path):
-            return path
+    odb9_files = ['ancestral_variants', 'ancestral']
+    odb10_files = ['refseq_db.faa']
 
-    # Try glob for any .faa file
+    for name in odb10_files:
+        path = os.path.join(lineage_dir, name)
+        if os.path.exists(path):
+            return path, 'odb10'
+
+    for name in odb9_files:
+        path = os.path.join(lineage_dir, name)
+        if os.path.exists(path):
+            return path, 'odb9'
+
+    # Try glob for any .faa file — assume ODB10 format
     faa_files = glob.glob(os.path.join(lineage_dir, '*.faa'))
     if faa_files:
-        return faa_files[0]
+        return faa_files[0], 'odb10'
 
-    return None
+    return None, None
 
 
 def load_scores_cutoff(lineage_dir):
@@ -69,10 +73,12 @@ def load_scores_cutoff(lineage_dir):
     return cutoffs
 
 
-def load_lengths_cutoff(lineage_dir):
+def load_lengths_cutoff(lineage_dir, odb_version):
     """Load the per-BUSCO expected protein lengths from the lineage dataset.
 
-    Handles both ODB9 and ODB10/11 column orders.
+    ODB9:     BUSCO_ID  0          sd   mean_length
+    ODB10/11: BUSCO_ID  n_species  mean_length  sd
+
     Returns dict: {busco_id: (mean_length, std_dev)}
     """
     path = os.path.join(lineage_dir, 'lengths_cutoff')
@@ -86,47 +92,59 @@ def load_lengths_cutoff(lineage_dir):
             if not line or line.startswith('#'):
                 continue
             fields = line.split('\t')
-            if len(fields) >= 3:
-                busco_id = fields[0]
-                # Try to determine column order by checking which fields are numeric
-                # ODB9: BUSCO_ID  mean  sd  n_species
-                # ODB10: BUSCO_ID  n_species  mean  sd
-                try:
-                    val1 = float(fields[1])
-                    val2 = float(fields[2])
-                    if len(fields) >= 4:
-                        val3 = float(fields[3])
-                        # If field[1] is small integer (n_species) and field[2] is larger (mean length)
-                        if val1 == int(val1) and val1 < 1000 and val2 > val1:
-                            # ODB10 format: ID, n_species, mean, sd
-                            cutoffs[busco_id] = (val2, val3)
-                        else:
-                            # ODB9 format: ID, mean, sd, n_species
-                            cutoffs[busco_id] = (val1, val2)
-                    else:
-                        # 3 columns: ID, mean, sd
-                        cutoffs[busco_id] = (val1, val2)
-                except ValueError:
-                    continue
+            if len(fields) < 4:
+                continue
+            busco_id = fields[0]
+            try:
+                if odb_version == 'odb9':
+                    # ODB9: ID, 0, sd, mean_length
+                    cutoffs[busco_id] = (float(fields[3]), float(fields[2]))
+                else:
+                    # ODB10/11: ID, n_species, mean_length, sd
+                    cutoffs[busco_id] = (float(fields[2]), float(fields[3]))
+            except ValueError:
+                continue
     return cutoffs
 
 
-def get_busco_ids_from_proteins(protein_file):
-    """Extract BUSCO IDs from the protein FASTA headers.
+def build_protein_to_busco_map(protein_file, scores_cutoff):
+    """Map protein sequence names to canonical BUSCO group IDs.
 
-    Returns set of BUSCO IDs (the part before the colon or first underscore
-    in the FASTA header, depending on format).
+    ODB9 ancestral_variants has multiple variants per group
+    (e.g. EOG09360002_0 .. _9).  We collapse to the base group ID
+    by checking against scores_cutoff keys.
+
+    ODB10/11 headers use colon separators (e.g. 100at7147:name).
+
+    Returns (mapping dict {protein_name: busco_group_id},
+             set of canonical BUSCO group IDs).
     """
-    ids = set()
+    mapping = {}
+    all_busco_ids = set()
+
     with open(protein_file) as f:
         for line in f:
-            if line.startswith('>'):
-                header = line[1:].strip().split()[0]
-                # ODB10: headers like ">100at7147:protein_name"
-                # ODB9: headers like ">EOG09150001"
-                busco_id = header.split(':')[0]
-                ids.add(busco_id)
-    return ids
+            if not line.startswith('>'):
+                continue
+            header = line[1:].strip().split()[0]
+            raw_id = header.split(':')[0]
+
+            if raw_id in scores_cutoff:
+                mapping[header] = raw_id
+                all_busco_ids.add(raw_id)
+            elif '_' in raw_id:
+                base_id = raw_id.rsplit('_', 1)[0]
+                if base_id in scores_cutoff:
+                    mapping[header] = base_id
+                    all_busco_ids.add(base_id)
+                else:
+                    mapping[header] = raw_id
+                    all_busco_ids.add(raw_id)
+            else:
+                mapping[header] = raw_id
+                all_busco_ids.add(raw_id)
+
+    return mapping, all_busco_ids
 
 
 def run_miniprot(genome_fasta, protein_fasta, output_paf, threads=1):
@@ -155,8 +173,11 @@ def run_miniprot(genome_fasta, protein_fasta, output_paf, threads=1):
     return output_paf
 
 
-def parse_miniprot_paf(paf_file):
+def parse_miniprot_paf(paf_file, protein_to_busco):
     """Parse miniprot PAF output into per-BUSCO, per-contig hits.
+
+    Uses protein_to_busco mapping to resolve variant names
+    (e.g. EOG09360002_0) back to canonical BUSCO group IDs.
 
     Returns list of dicts: [{busco_id, contig, query_len, query_start, query_end,
                              target_start, target_end, score, aligned_len}, ...]
@@ -169,8 +190,7 @@ def parse_miniprot_paf(paf_file):
                 continue
 
             query_name = fields[0]
-            # Extract BUSCO ID from protein name (before colon or full name)
-            busco_id = query_name.split(':')[0]
+            busco_id = protein_to_busco.get(query_name, query_name.split(':')[0])
 
             query_len = int(fields[1])
             query_start = int(fields[2])
@@ -276,22 +296,26 @@ def classify_buscos(hits, all_busco_ids, scores_cutoff, lengths_cutoff):
     return contig_results
 
 
-def write_busco_output(contig_results, all_busco_ids, output_dir, lineage_name,
-                       contig_fasta_dir='contigs'):
-    """Write per-contig BUSCO V3 format TSV files.
+def write_odb_output(contig_results, all_busco_ids, output_dir, lineage_name,
+                     contig_fasta_dir='contigs'):
+    """Write per-contig ortholog classification TSV files.
 
     Creates the directory structure expected by hapsolo.py's importBuscos():
-      output_dir/busco_CONTIG/run_CONTIG/full_table_CONTIG.tsv
+      output_dir/odbaln_CONTIG/run_CONTIG/full_table_CONTIG.tsv
+
+    Also writes a concatenated summary file:
+      output_dir/full_table_results.tsv
     """
-    all_contigs = set(contig_results.keys())
+    all_contigs = sorted(contig_results.keys())
 
-    for contig in sorted(all_contigs):
-        busco_dir = os.path.join(output_dir, 'busco_' + contig, 'run_' + contig)
-        os.makedirs(busco_dir, exist_ok=True)
+    # Per-contig files
+    for contig in all_contigs:
+        odb_dir = os.path.join(output_dir, 'odbaln_' + contig, 'run_' + contig)
+        os.makedirs(odb_dir, exist_ok=True)
 
-        tsv_path = os.path.join(busco_dir, 'full_table_' + contig + '.tsv')
+        tsv_path = os.path.join(odb_dir, 'full_table_' + contig + '.tsv')
         with open(tsv_path, 'w') as f:
-            f.write('# BUSCO version is: search_orthologs 1.0 (miniprot)\n')
+            f.write('# search_orthologs 1.0 (miniprot)\n')
             f.write('# The lineage dataset is: ' + lineage_name + '\n')
             f.write('# To reproduce this run: python search_orthologs.py -i '
                     + contig_fasta_dir + '/' + contig + '.fasta -l '
@@ -309,7 +333,28 @@ def write_busco_output(contig_results, all_busco_ids, output_dir, lineage_name,
                 else:
                     f.write(busco_id + '\tMissing\n')
 
-    print('BUSCO results written for ' + str(len(all_contigs)) + ' contigs to ' + output_dir)
+    # Concatenated summary file — all non-Missing hits plus one Missing
+    # row per BUSCO that has no hits on any contig
+    summary_path = os.path.join(output_dir, 'full_table_results.tsv')
+    seen_buscos = set()
+    with open(summary_path, 'w') as f:
+        f.write('# search_orthologs 1.0 (miniprot)\n')
+        f.write('# The lineage dataset is: ' + lineage_name + '\n')
+        f.write('# Busco id\tStatus\tContig\tStart\tEnd\tScore\tLength\n')
+        for contig in all_contigs:
+            for busco_id in sorted(all_busco_ids):
+                if busco_id in contig_results[contig]:
+                    status, start, end, score, length = contig_results[contig][busco_id]
+                    f.write(busco_id + '\t' + status + '\t' + contig + '\t'
+                            + str(start) + '\t' + str(end) + '\t'
+                            + str(score) + '\t' + str(length) + '\n')
+                    seen_buscos.add(busco_id)
+        for busco_id in sorted(all_busco_ids - seen_buscos):
+            f.write(busco_id + '\tMissing\n')
+
+    print('Results written for ' + str(len(all_contigs)) + ' contigs to '
+          + output_dir)
+    print('Concatenated results: ' + summary_path)
 
 
 def detect_lineage_name(lineage_dir):
@@ -354,23 +399,24 @@ def main():
         print('Error: Lineage directory not found: ' + args.lineage)
         sys.exit(1)
 
-    # Find protein sequences
-    protein_file = find_protein_file(args.lineage)
+    # Find protein sequences and detect ODB version
+    protein_file, odb_version = find_protein_file(args.lineage)
     if protein_file is None:
         print('Error: No protein sequence file found in lineage directory.')
         print('Expected one of: refseq_db.faa, ancestral_variants, ancestral')
         sys.exit(1)
-    print('Protein sequences: ' + protein_file)
+    print('Protein sequences: ' + protein_file + ' (' + odb_version + ')')
 
     # Load classification thresholds
     scores_cutoff = load_scores_cutoff(args.lineage)
-    lengths_cutoff = load_lengths_cutoff(args.lineage)
+    lengths_cutoff = load_lengths_cutoff(args.lineage, odb_version)
     print('Score cutoffs loaded: ' + str(len(scores_cutoff)) + ' BUSCOs')
     print('Length cutoffs loaded: ' + str(len(lengths_cutoff)) + ' BUSCOs')
 
-    # Get all BUSCO IDs
-    all_busco_ids = get_busco_ids_from_proteins(protein_file)
-    print('Total BUSCO genes in lineage: ' + str(len(all_busco_ids)))
+    # Build protein-name → BUSCO-group-ID mapping (collapses ODB9 variants)
+    protein_to_busco, all_busco_ids = build_protein_to_busco_map(
+        protein_file, scores_cutoff)
+    print('Total BUSCO groups in lineage: ' + str(len(all_busco_ids)))
 
     # Detect lineage name
     lineage_name = detect_lineage_name(args.lineage)
@@ -380,20 +426,20 @@ def main():
     os.makedirs(args.output, exist_ok=True)
 
     # Run miniprot alignment
-    paf_file = os.path.join(args.output, 'miniprot_busco.paf')
+    paf_file = os.path.join(args.output, 'miniprot_odbaln.paf')
     run_miniprot(args.input, protein_file, paf_file, args.threads)
 
     # Parse results
-    hits = parse_miniprot_paf(paf_file)
+    hits = parse_miniprot_paf(paf_file, protein_to_busco)
     print('Total alignment hits: ' + str(len(hits)))
 
     # Classify
     contig_results = classify_buscos(hits, all_busco_ids, scores_cutoff,
                                      lengths_cutoff)
 
-    # Write output in BUSCO V3 format
-    write_busco_output(contig_results, all_busco_ids, args.output,
-                       lineage_name, args.contig_dir)
+    # Write per-contig TSVs and concatenated summary
+    write_odb_output(contig_results, all_busco_ids, args.output,
+                     lineage_name, args.contig_dir)
 
     # Print summary
     total_complete = 0

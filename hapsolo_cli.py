@@ -180,7 +180,7 @@ def cmd_train(args):
         resolve_python(args), script,
         '-i', args.input,
         '-b', args.buscos,
-        '--mode', '0',
+        '--mode', str(args.mode),
         '-t', str(args.threads),
         '-n', str(args.iterations),
     ]
@@ -311,8 +311,8 @@ Python interpreter:
         help='Input genome FASTA file')
     p_search.add_argument('-l', '--lineage', required=True,
         help='OrthoDB lineage dataset directory (ODB9/10/11)')
-    p_search.add_argument('-o', '--output', default='busco_output',
-        help='Output directory for BUSCO results (default: busco_output)')
+    p_search.add_argument('-o', '--output', default='odbaln_output',
+        help='Output directory for ortholog search results (default: odbaln_output)')
     p_search.add_argument('-t', '--threads', type=int, default=1,
         help='Number of threads (default: 1)')
     p_search.add_argument('--contig-dir', default='contigs',
@@ -325,7 +325,7 @@ Python interpreter:
     p_train.add_argument('-i', '--input', required=True,
         help='Input FASTA file (preprocessed)')
     p_train.add_argument('-b', '--buscos', required=True,
-        help='BUSCO output directory')
+        help='Ortholog search output directory (odbaln_output/ or busco_output/)')
     p_train.add_argument('--paf', default=None,
         help='Minimap2 PAF alignment file')
     p_train.add_argument('--psl', default=None,
@@ -346,6 +346,8 @@ Python interpreter:
         help='Weight for fragmented BUSCOs (default: 0.0)')
     p_train.add_argument('-M', '--thetaM', type=float, default=None,
         help='Weight for missing BUSCOs (default: 1.0)')
+    p_train.add_argument('--mode', type=int, choices=[0, 2], default=0,
+        help='Optimizer mode: 0 = random walk (default), 2 = steepest descent')
     p_train.set_defaults(func=cmd_train)
 
     # ── classify ──
@@ -354,7 +356,7 @@ Python interpreter:
     p_cls.add_argument('-i', '--input', required=True,
         help='Input FASTA file (preprocessed)')
     p_cls.add_argument('-b', '--buscos', required=True,
-        help='BUSCO output directory')
+        help='Ortholog search output directory (odbaln_output/ or busco_output/)')
     p_cls.add_argument('--paf', default=None,
         help='Minimap2 PAF alignment file')
     p_cls.add_argument('--psl', default=None,

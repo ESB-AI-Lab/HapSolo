@@ -2,7 +2,7 @@
 
 An optimization approach for removing secondary haplotigs during diploid genome assembly and scaffolding.
 
-HapSolo runs a hill-climbing search over alignment filter thresholds (PID, query coverage, query/reference length ratio) to minimize a cost function based on conserved single-copy ortholog completeness scores. The result is a primary assembly with reduced haplotype duplication and a secondary assembly containing the purged haplotigs.
+HapSolo runs a hill-climbing search over alignment filter thresholds (PID, query coverage, query/reference length ratio) to minimize a cost function based on conserved single-copy ortholog completeness scores. Two optimizer modes are available: a **random walk** (mode 0, default) that takes stochastic steps through the threshold space, and a **steepest descent** (mode 2) that evaluates all 8 octant neighbors at each step and moves to the lowest-cost position. Both use plateau detection and boundary resets to escape local minima. The result is a primary assembly with reduced haplotype duplication and a secondary assembly containing the purged haplotigs.
 
 # Installation
 
@@ -75,10 +75,10 @@ The unified CLI (`hapsolo_cli.py`) drives the entire pipeline through five subco
 python3 hapsolo_cli.py preprocess -i assembly.fasta
 python3 hapsolo_cli.py align      -i assembly_new.fasta -t 8
 python3 hapsolo_cli.py search     -i assembly_new.fasta -l diptera_odb10/ -o ortholog_output/ -t 8
-python3 hapsolo_cli.py train      -i assembly_new.fasta --paf assembly_new_self_align.paf.gz -b ortholog_output/ -t 32 -n 1000
+python3 hapsolo_cli.py train      -i assembly_new.fasta --paf assembly_new_self_align.paf.gz -b ortholog_output/ -t 32 -n 2000
 ```
 
-The optimized primary and secondary assemblies are written to the `asms/` directory.
+The optimized primary and secondary assemblies, along with assembly statistics reports, are written to the `asms/` directory.
 
 Run `python3 hapsolo_cli.py` (no arguments) to see the full help, or `python3 hapsolo_cli.py <subcommand> --help` for details on any step.
 
@@ -165,7 +165,7 @@ python3 hapsolo_cli.py search -i assembly_new.fasta -l diptera_odb10/ -o ortholo
 Run hill-climbing optimization to find the alignment filter thresholds that minimize the cost function. Each thread starts from a random initial point and explores independently.
 
 ```
-python3 hapsolo_cli.py train -i assembly_new.fasta --paf assembly_new_self_align.paf.gz -b ortholog_output/ -t 32 -n 1000
+python3 hapsolo_cli.py train -i assembly_new.fasta --paf assembly_new_self_align.paf.gz -b ortholog_output/ -t 32 -n 2000
 ```
 
 | Flag | Description |
@@ -177,6 +177,7 @@ python3 hapsolo_cli.py train -i assembly_new.fasta --paf assembly_new_self_align
 | `-n` | Iterations per thread (default: 1000) |
 | `-B` | Number of best candidate assemblies to return (default: 1) |
 | `--min-contig` | Minimum contig size for primary assembly (default: 1000 bp) |
+| `--mode` | Optimizer mode: `0` = random walk (default), `2` = steepest descent (see below) |
 | `-S` / `-D` / `-F` / `-M` | Cost function weights for Single, Duplicate, Fragmented, Missing orthologs |
 
 **Cost function:** `(F·θF + D·θD + M·θM) / (S·θS)`
@@ -185,7 +186,23 @@ Defaults: θS=1.0, θD=1.0, θF=0.0, θM=1.0
 
 Lower scores are better. The optimizer minimizes duplicates and missing orthologs while maximizing single-copy orthologs.
 
-**Output:** Primary and secondary assembly FASTAs in the `asms/` directory, plus `.scores` and `.deltascores` files containing the cost trajectory of every iteration.
+### Optimizer modes
+
+**Mode 0 — Random walk (default).** Each iteration perturbs the current thresholds by a random step in each dimension. Simple and effective; with enough iterations (1000–2000 per thread) it explores the search space broadly.
+
+```
+python3 hapsolo_cli.py train -i assembly_new.fasta --paf self_align.paf.gz -b ortholog_output/ -t 8 -n 2000
+```
+
+**Mode 2 — Steepest descent.** Each iteration evaluates all 8 octant neighbors (±step on each of the 3 threshold dimensions) and moves to the lowest-cost neighbor. More computationally intensive per iteration (8 evaluations per step vs 1), but converges faster when starting near a good solution. Uses the same plateau detection and boundary restart logic as mode 0.
+
+```
+python3 hapsolo_cli.py train -i assembly_new.fasta --paf self_align.paf.gz -b ortholog_output/ --mode 2 -t 8 -n 2000
+```
+
+Both modes produce the same output format and can be compared directly. In practice, mode 2 with fewer iterations can match or outperform mode 0 with more iterations, at the cost of higher per-iteration compute.
+
+**Output:** Primary and secondary assembly FASTAs in the `asms/` directory, a `_report.txt` with assembly statistics and ortholog completeness for each result, plus `.scores` and `.deltascores` files containing the cost trajectory of every iteration.
 
 ### Progress display
 
@@ -272,7 +289,7 @@ python3 $HAPSOLO/hapsolo_cli.py search     -i ${ASM%.fasta}_new.fasta -l $LINEAG
 python3 $HAPSOLO/hapsolo_cli.py train      -i ${ASM%.fasta}_new.fasta \
                                             --paf ${ASM%.fasta}_new_self_align.paf.gz \
                                             -b ortholog_output \
-                                            -t $SLURM_CPUS_PER_TASK -n 2000
+                                            -t $SLURM_CPUS_PER_TASK -n 2000 --mode 2
 ```
 
 # Running Steps Individually
@@ -291,9 +308,14 @@ minimap2 -t 36 -P -G 500k -k19 -w2 -A1 -B2 -O2,4 -E2,1 -s200 -z200 -N50 \
 # 3. Ortholog classification
 python3 search_orthologs.py -i assembly_new.fasta -l diptera_odb10/ -o ortholog_output/ -t 8
 
-# 4. Optimization (mode 0 = hill climbing, mode 1 = fixed thresholds)
+# 4. Optimization
+# mode 0 = random walk (default), mode 2 = steepest descent, mode 1 = fixed thresholds
 python3 hapsolo.py -i assembly_new.fasta --paf self_align.paf.gz -b ortholog_output/ \
-    --mode 0 -t 32 -n 1000
+    --mode 0 -t 32 -n 2000
+
+# Steepest descent optimizer
+python3 hapsolo.py -i assembly_new.fasta --paf self_align.paf.gz -b ortholog_output/ \
+    --mode 2 -t 8 -n 2000
 ```
 
 # BLAT Alternative
@@ -315,11 +337,12 @@ After a successful run, you will have:
 asms/
   <assembly>_<minContig>_<PID>_<QRPctMin>to<QRPctMax>_<QPctMin>_primary.fasta
   <assembly>_<minContig>_<PID>_<QRPctMin>to<QRPctMax>_<QPctMin>_secondary.fasta
+  <assembly>_<minContig>_<PID>_<QRPctMin>to<QRPctMax>_<QPctMin>_report.txt
 <assembly>_<timestamp>.scores
 <assembly>_<timestamp>.deltascores
 ```
 
-The filenames encode the threshold values selected by the optimizer. The `.scores` and `.deltascores` files contain comma-separated cost values for every iteration of every thread, useful for plotting convergence curves.
+The filenames encode the threshold values selected by the optimizer. The `_report.txt` contains assembly statistics at multiple size thresholds (contig counts, total lengths, N50/N75/L50/L75, GC content, N density) and ortholog completeness scores — comparable to QUAST + BUSCO output in a single file. The `.scores` and `.deltascores` files contain comma-separated cost values for every iteration of every thread, useful for plotting convergence curves.
 
 # Limitations
 
