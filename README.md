@@ -2,7 +2,8 @@
 
 An optimization approach for removing secondary haplotigs during diploid genome assembly and scaffolding.
 
-HapSolo runs a hill-climbing search over alignment filter thresholds (PID, query coverage, query/reference length ratio) to minimize a cost function based on conserved single-copy ortholog completeness scores. Two optimizer modes are available: a **random walk** (mode 0, default) that takes stochastic steps through the threshold space, and a **steepest descent** (mode 2) that evaluates all 8 octant neighbors at each step and moves to the lowest-cost position. Both use plateau detection and boundary resets to escape local minima. The result is a primary assembly with reduced haplotype duplication and a secondary assembly containing the purged haplotigs.
+HapSolo runs a hill-climbing search over alignment filter thresholds (PID, query coverage, query/reference length ratio) to minimize a cost function based on conserved single-copy ortholog completeness scores. Two optimizer modes are available: a **random walk** (mode 0, default) that takes stochastic steps through the threshold space, and a **steepest descent** (mode 2) that evaluates all 8 octant neighbors at each step and moves to the lowest-cost position. Both use plateau detection and boundary resets to escape local minima. The result is a primary assembly with reduced haplotype duplication and a secondary assembly containing the purged haplotigs.<br><br>
+***Note: OrthoDB v9 BUSCO lineages have been taken offline but I have preserved them on the Internet Archive here:*** [https://archive.org/details/odb9-busco-lineages](https://archive.org/details/odb9-busco-lineages)
 
 # Singularity Installation (Preferred)
 ```
