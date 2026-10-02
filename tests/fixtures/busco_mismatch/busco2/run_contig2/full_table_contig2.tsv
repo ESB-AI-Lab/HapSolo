@@ -1,0 +1,10 @@
+# BUSCO version is: 3.0.2
+# The lineage dataset is: test_odb9
+# To reproduce this run: python BUSCO.py -i contigs/tig00000002|arrow.fasta -l test_odb9 -sp test
+#
+# Busco id	Status	Contig	Start	End	Score	Length
+BUSCO001	Complete	tig00000002|arrow	200	600	195.0	400
+BUSCO002	Fragmented	tig00000002|arrow	700	850	60.1	150
+BUSCO003	Complete	tig00000002|arrow	1100	1500	190.0	400
+BUSCO004	Missing
+BUSCO005	Complete	tig00000002|arrow	1600	2000	175.5	400

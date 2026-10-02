@@ -1,0 +1,167 @@
+Bootstrap: docker
+From: python:3.12-slim-bookworm
+
+# HapSolo2 Singularity/Apptainer image (CPU + GPU).
+#
+# Tool and library versions are pinned to what the HapSolo2 paper results were
+# produced and tested with (host "tile", 2026-09-30); upstream latest as of that
+# date for minimap2 (2.31) and miniprot (0.18).
+#
+# GPU: CuPy is the CUDA 12 wheel with the [ctk] extra, so the CUDA runtime
+# libraries (NVRTC, cuBLAS, ...) ship inside the image and only the host driver
+# is needed (`--nv`). CUDA 12 rather than 13 because CUDA 13 dropped Volta
+# (V100 nodes on SDSC Expanse / PSC Bridges-2) and needs driver >= R580.
+#
+# Build (from this directory):
+#   singularity build --fakeroot hapsolo2.sif hapsolo2.def
+
+%labels
+    Maintainer    Edwin Solares
+    Application   HapSolo2
+    Description   Haplotig removal for diploid genome assemblies (GPU-enabled)
+    Version       2.0.0
+    Source        https://github.com/esolares/HapSolo
+    minimap2      2.31
+    miniprot      0.18
+    python        3.12
+    cupy          14.2.0 (cuda12x, ctk)
+
+%files
+    hapsolo/              /opt/HapSolo/
+    hapsolo_cli.py        /opt/HapSolo/hapsolo_cli.py
+    preprocessfasta.py    /opt/HapSolo/preprocessfasta.py
+    search_orthologs.py   /opt/HapSolo/search_orthologs.py
+    assembly_stats.py     /opt/HapSolo/assembly_stats.py
+    pyproject.toml        /opt/HapSolo/pyproject.toml
+    requirements.txt      /opt/HapSolo/requirements.txt
+    requirements-gpu.txt  /opt/HapSolo/requirements-gpu.txt
+    README.md             /opt/HapSolo/README.md
+    LICENSE               /opt/HapSolo/LICENSE
+    tests/                /opt/HapSolo/
+    scripts/              /opt/HapSolo/
+
+%post
+    set -eu
+    MINIMAP2_VERSION=2.31
+    MINIPROT_VERSION=0.18
+
+    apt-get update
+    apt-get install -y --no-install-recommends bzip2 gzip wget ca-certificates procps
+    apt-get clean
+    rm -rf /var/lib/apt/lists/*
+
+    # Python stack, pinned to the tested versions.
+    pip install --no-cache-dir \
+        pandas==2.3.3 \
+        numpy==2.3.5 \
+        tqdm==4.69.0 \
+        matplotlib==3.10.7 \
+        pytest==9.0.1 \
+        "cupy-cuda12x[ctk]==14.2.0"
+
+    # HapSolo package + console entry points (no deps: already pinned above).
+    pip install --no-cache-dir --no-deps /opt/HapSolo/
+
+    # minimap2 (official precompiled release)
+    wget -qO /tmp/minimap2.tar.bz2 \
+        https://github.com/lh3/minimap2/releases/download/v${MINIMAP2_VERSION}/minimap2-${MINIMAP2_VERSION}_x64-linux.tar.bz2
+    tar --no-same-owner -xjf /tmp/minimap2.tar.bz2 -C /tmp
+    cp /tmp/minimap2-${MINIMAP2_VERSION}_x64-linux/minimap2 /usr/local/bin/
+    cp /tmp/minimap2-${MINIMAP2_VERSION}_x64-linux/paftools.js /tmp/minimap2-${MINIMAP2_VERSION}_x64-linux/k8 /usr/local/bin/ 2>/dev/null || true
+    rm -rf /tmp/minimap2*
+
+    # miniprot (official precompiled release; no compiler needed)
+    wget -qO /tmp/miniprot.tar.bz2 \
+        https://github.com/lh3/miniprot/releases/download/v${MINIPROT_VERSION}/miniprot-${MINIPROT_VERSION}_x64-linux.tar.bz2
+    tar --no-same-owner -xjf /tmp/miniprot.tar.bz2 -C /tmp
+    cp /tmp/miniprot-${MINIPROT_VERSION}_x64-linux/miniprot /usr/local/bin/
+    rm -rf /tmp/miniprot*
+
+    # BLAT (UCSC precompiled). Free for academic/non-profit use; commercial use
+    # needs a licence from UCSC. Optional aligner: PAF/minimap2 is the default.
+    wget -qO /usr/local/bin/blat https://hgdownload.soe.ucsc.edu/admin/exe/linux.x86_64/blat/blat
+    chmod +x /usr/local/bin/blat
+
+    # `hapsolo` = unified pipeline CLI (preprocess/align/search/train/classify),
+    # matching the README; `python3 -m hapsolo` is the optimizer itself.
+    chmod +x /opt/HapSolo/hapsolo_cli.py /opt/HapSolo/assembly_stats.py /opt/HapSolo/scripts/*.sh
+    ln -sf /opt/HapSolo/hapsolo_cli.py /usr/local/bin/hapsolo
+    ln -sf /opt/HapSolo/assembly_stats.py /usr/local/bin/assembly_stats.py
+
+    # Record exact tool versions in the image.
+    {
+        echo "minimap2 $(minimap2 --version)"
+        echo "miniprot $(miniprot --version)"
+        echo "blat $(blat 2>&1 | head -1)"
+        python3 -c "import sys,pandas,numpy,tqdm,matplotlib,cupy;print('python',sys.version.split()[0]);print('pandas',pandas.__version__);print('numpy',numpy.__version__);print('tqdm',tqdm.__version__);print('matplotlib',matplotlib.__version__);print('cupy',cupy.__version__)"
+    } > /opt/HapSolo/VERSIONS.txt
+
+%environment
+    export PATH=/opt/HapSolo:$PATH
+    export LC_ALL=C.UTF-8
+    export LANG=C.UTF-8
+    export PYTHONUNBUFFERED=1
+    # Singularity bind-mounts $HOME, so a host ~/.local/lib/python3.12 would
+    # shadow the image's pinned packages (seen: host cupy-cuda13x loaded).
+    export PYTHONNOUSERSITE=1
+    # $HOME is often read-only or absent inside the container on HPC.
+    export MPLCONFIGDIR=${TMPDIR:-/tmp}/matplotlib-$USER
+    export CUPY_CACHE_DIR=${TMPDIR:-/tmp}/cupy-cache-$USER
+
+%runscript
+    exec python3 /opt/HapSolo/hapsolo_cli.py "$@"
+
+%test
+    set -e
+    # Run from a neutral directory: a ./hapsolo/ in the caller's cwd would be imported first.
+    cd "${TMPDIR:-/tmp}"
+    cat /opt/HapSolo/VERSIONS.txt
+    # Every Python dependency must come from the image, never from the host.
+    python3 -c "
+import pandas, numpy, tqdm, matplotlib, cupy, hapsolo
+for m in (pandas, numpy, tqdm, matplotlib, cupy, hapsolo):
+    assert m.__file__.startswith('/usr/local/'), f'{m.__name__} loaded from outside the image: {m.__file__}'
+print('hapsolo package OK:', hapsolo.__file__)"
+    python3 -m hapsolo --help > /dev/null
+    python3 -m hapsolo.preprocess --help > /dev/null
+    python3 -m hapsolo.search --help > /dev/null
+    python3 /opt/HapSolo/hapsolo_cli.py --help > /dev/null
+    python3 /opt/HapSolo/assembly_stats.py --help > /dev/null
+    minimap2 --version
+    miniprot --version
+    # GPU check only when the container was started with --nv and a GPU is visible.
+    if command -v nvidia-smi > /dev/null 2>&1 && nvidia-smi > /dev/null 2>&1; then
+        python3 -c "import cupy; a = cupy.arange(10); print('cupy GPU OK:', int(a.sum()), cupy.cuda.runtime.getDeviceProperties(0)['name'].decode())"
+    else
+        echo "No GPU visible (run with --nv to test CuPy); skipping GPU check."
+    fi
+    echo "All smoke tests passed."
+
+%help
+    HapSolo2 Singularity image (CPU + GPU)
+    ======================================
+    Exact tool versions: cat /opt/HapSolo/VERSIONS.txt (inside the image)
+
+    Build (from the dev folder):
+        singularity build --fakeroot hapsolo2.sif hapsolo2.def
+
+    Unified pipeline CLI:
+        singularity run hapsolo2.sif preprocess -i assembly.fasta
+        singularity run hapsolo2.sif align      -i assembly_new.fasta -t 8
+        singularity run hapsolo2.sif search     -i assembly_new.fasta -l diptera_odb10/ -o ortholog_output/ -t 8
+        singularity run --nv hapsolo2.sif train -i assembly_new.fasta --paf assembly_new_self_align.paf.gz -b ortholog_output/ --mode 3 --gpu --totaliters 100000
+
+    Optimizer directly (same flags):
+        singularity exec --nv hapsolo2.sif python3 -m hapsolo -i assembly_new.fasta --paf assembly_new_self_align.paf.gz -b ortholog_output/ --gpu --mode 3 --totaliters 100000
+
+    Assembly statistics and plots:
+        singularity exec hapsolo2.sif assembly_stats.py -i contigs.fa scaffolds.fa --name Contigs "HiC Scaffolds" --genome-size 900m -n 12 -o plots/
+
+    Bundled job scripts (copy out and edit):
+        singularity exec hapsolo2.sif ls /opt/HapSolo/scripts
+
+    Tests (tests write temp files, so run a writable copy; add --bind for real data):
+        mkdir t && cd t && singularity exec --nv hapsolo2.sif bash -c 'cp -r /opt/HapSolo/tests . && python3 -m pytest -q tests'
+
+    Bind a host directory (HapSolo rejects absolute input paths, so cd in):
+        singularity run --nv --bind $PWD:/work --pwd /work hapsolo2.sif train ...

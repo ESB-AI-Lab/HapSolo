@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "HapSolo"
+version = "1.0.0"
+description = "An optimization approach for removing secondary haplotigs during diploid genome assembly and scaffolding"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.7"
+authors = [
+    { name = "Edwin Solares", email = "esolares80@gmail.com" },
+]
+keywords = [
+    "bioinformatics",
+    "genome-assembly",
+    "haplotig",
+    "haplotype",
+    "diploid",
+    "hill-climbing",
+    "optimization",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+    "pandas>=1.0",
+    "numpy>=1.18",
+    "tqdm>=4.0",
+]
+
+[project.optional-dependencies]
+gpu = [
+    "cupy>=10.0",
+]
+test = [
+    "pytest>=7.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/esolares/HapSolo"
+Repository = "https://github.com/esolares/HapSolo"
+Issues = "https://github.com/esolares/HapSolo/issues"
+
+[project.scripts]
+hapsolo = "hapsolo.__main__:main"
+hapsolo-cli = "hapsolo_cli:main"
+
+[tool.setuptools.packages.find]
+include = ["hapsolo*"]
+
+[tool.setuptools]
+py-modules = ["hapsolo_cli"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,5 @@
+# BUSCO version is: 3.0.2
+# The lineage dataset is: test_odb9
+BUSCO001	Missing
+BUSCO002	Complete	contigB	200	600	180.3	300
+BUSCO003	Missing

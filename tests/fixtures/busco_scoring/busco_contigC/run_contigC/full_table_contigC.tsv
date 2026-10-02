@@ -1,0 +1,13 @@
+# BUSCO version is: 3.0.2
+# The lineage dataset is: test_odb9
+# Summarized benchmarks in BUSCO notation for file contigC.fasta
+BUSCO001	Missing
+BUSCO002	Complete	contigC	100	500	400.0	300
+BUSCO003	Missing
+BUSCO004	Missing
+BUSCO005	Missing
+BUSCO006	Missing
+BUSCO007	Missing
+BUSCO008	Complete	contigC	100	500	400.0	300
+BUSCO009	Complete	contigC	100	500	400.0	300
+BUSCO010	Missing

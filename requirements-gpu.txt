@@ -1,0 +1,3 @@
+# GPU acceleration dependencies (requires NVIDIA GPU + CUDA 12)
+# Install alongside base requirements: pip install -r requirements-gpu.txt
+cupy-cuda12x
