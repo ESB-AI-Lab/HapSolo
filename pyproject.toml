@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "HapSolo"
-version = "1.0.0"
+version = "2.0.0"
 description = "An optimization approach for removing secondary haplotigs during diploid genome assembly and scaffolding"
 readme = "README.md"
 license = { text = "Apache-2.0" }

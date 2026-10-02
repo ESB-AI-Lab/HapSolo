@@ -10,12 +10,23 @@ HapSolo runs a hill-climbing search over alignment filter thresholds (PID, query
 
 # Installation
 
-## pip install (recommended)
+## pip install from PyPI (recommended)
 
 ```
-git clone https://github.com/esolares/HapSolo.git
-cd HapSolo
-pip install .
+pip install hapsolo
+```
+
+For GPU acceleration (requires CUDA):
+
+```
+pip install hapsolo[gpu]
+```
+
+If the generic `cupy` fails to build, install the wheel matching your CUDA version instead:
+
+```
+pip install hapsolo
+pip install cupy-cuda12x   # match your CUDA version (cuda11x, cuda12x, etc.)
 ```
 
 This installs the `hapsolo` and `hapsolo-cli` commands system-wide (or in your virtualenv). You can then run:
@@ -24,6 +35,15 @@ This installs the `hapsolo` and `hapsolo-cli` commands system-wide (or in your v
 hapsolo-cli preprocess -i assembly.fasta
 hapsolo-cli train ...
 hapsolo --help        # direct optimizer entry point
+```
+
+## Install from source
+
+```
+git clone https://github.com/esolares/HapSolo.git
+cd HapSolo
+pip install .            # CPU only
+pip install .[gpu]       # with GPU support
 ```
 
 ## Without installing
@@ -37,9 +57,9 @@ python3 hapsolo_cli.py preprocess -i assembly.fasta
 
 ## Dependencies
 
-**Python packages:** `pandas`, `numpy`, `tqdm` (installed automatically by `pip install .`, or manually via `pip install -r requirements.txt`).
+**Python packages:** `pandas`, `numpy`, `tqdm` (installed automatically by `pip install hapsolo`).
 
-**Optional:** `cupy` for GPU acceleration (`pip install cupy-cuda12x` — match your CUDA version, or `pip install .[gpu]`).
+**Optional:** `cupy` for GPU acceleration (`pip install hapsolo[gpu]`, or `pip install cupy-cuda12x` to match your specific CUDA version).
 
 **External tools** (must be on `$PATH`):
 
@@ -333,7 +353,7 @@ HapSolo supports GPU-accelerated hill climbing via [CuPy](https://cupy.dev/). Th
 GPU flags are available through both `hapsolo train` and `python -m hapsolo` (the direct optimizer entry point):
 
 ```
-pip install cupy-cuda12x   # match your CUDA version
+pip install hapsolo[gpu]   # or: pip install cupy-cuda12x to match your CUDA version
 
 # GPU with auto-detected agent count (default: SM count)
 hapsolo train -i assembly_new.fasta --paf self_align.paf.gz -b ortholog_output/ \
