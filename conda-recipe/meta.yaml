@@ -1,0 +1,23 @@
+package:
+  name: "hapsolo"
+  version: "1.0"
+about:
+  summary: "Hapsolo scripts"
+source:
+  path: ../
+requirements:
+  build:
+    - python {{ python }}
+    - pip
+    - setuptools
+    - "pandas>=1.0"
+    - "tqdm>=4.0"
+  run:
+    - "python=3.6"
+    - "minimap2"
+    - "miniprot"
+    - "python=3.6"
+    - "pandas>=1.0"
+    - "tqdm>=4.0"
+build:
+  script: python setup.py install
